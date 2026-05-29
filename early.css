@@ -1,0 +1,5 @@
+/* Runs before page paint to prevent the flash of white.
+   Only sets a dark canvas; per-element colors are flipped by content.js. */
+html {
+  background-color: #121212 !important;
+}

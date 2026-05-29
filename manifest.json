@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Quick Dark",
+  "version": "1.5.0",
+  "description": "Instantly darkens bright websites while preserving each color's hue and tone. One-click per-site toggle.",
+  "permissions": ["storage", "scripting", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Quick Dark"
+  }
+}
