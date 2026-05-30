@@ -1,15 +1,27 @@
 {
   "manifest_version": 3,
-  "name": "Quick Dark",
-  "version": "1.5.0",
-  "description": "Instantly darkens bright websites while preserving each color's hue and tone. One-click per-site toggle.",
+  "name": "Nocturne",
+  "version": "1.6.0",
+  "description": "Tone-preserving dark mode for every site. Darkens bright pages while keeping each color's hue, with a one-click per-site toggle.",
   "permissions": ["storage", "scripting", "tabs"],
   "host_permissions": ["<all_urls>"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "background": {
     "service_worker": "background.js"
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Quick Dark"
+    "default_title": "Nocturne — toggle dark mode",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   }
 }

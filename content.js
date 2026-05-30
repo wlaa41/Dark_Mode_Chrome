@@ -4,7 +4,7 @@
   const BG_LIGHT_THRESHOLD       = 0.55;
   const FG_DARK_THRESHOLD        = 0.55;  // Achromatic text below this -> flip to near-white.
   const FG_CHROMATIC_THRESHOLD   = 0.80;  // Chromatic colors below this -> push to vivid bright.
-  const PSEUDO_ATTR              = 'data-quickdark';
+  const PSEUDO_ATTR              = 'data-nocturne';
 
   // Handles "rgb(r, g, b)", "rgb(r g b)", "rgb(r g b / a)" and "rgb(r g b / 50%)".
   const rgbReSingle = /rgba?\(\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)(?:\s*[,/]\s*([\d.]+%?))?\s*\)/;
@@ -232,8 +232,10 @@
   // ---------- SVG / image handling ----------
 
   const SVG_NS                = 'http://www.w3.org/2000/svg';
-  const SKIP_ATTR             = 'data-quickdark-skip';
-  const IMG_PROCESSED_DATASET = 'quickdarkImg';
+  const SKIP_ATTR             = 'data-nocturne-skip';
+  // Honor the legacy data-quickdark-skip attribute too, so existing markup keeps working.
+  const SKIP_SELECTOR         = '[' + SKIP_ATTR + '],[data-quickdark-skip]';
+  const IMG_PROCESSED_DATASET = 'nocturneImg';
   const RASTER_ICON_MAX_PX    = 100;  // tweak in source to change icon size cutoff
   const CSS_INVERT_FILTER     = 'invert(1) hue-rotate(180deg)';
 
@@ -293,6 +295,7 @@
       const adopted = document.importNode(svgEl, true);
       img.parentNode.replaceChild(adopted, img);
       walk(adopted);
+      flushWrites();
     } catch {
       // CORS-blocked, 404, parse error: CSS filter fallback
       img.style.setProperty('filter', CSS_INVERT_FILTER, 'important');
@@ -329,14 +332,54 @@
   // the page's stylesheets once they're parsed, find rules whose selectors
   // include interactive pseudo-classes, flip their colors, and inject a
   // single dedicated stylesheet at the end of <head> with !important overrides.
+  //
+  // The pass is incremental and cached: each stylesheet remembers how many
+  // rules we've already scanned (so CSS-in-JS libraries that append rules only
+  // cost us the new ones), and every cross-origin href is fetched at most once.
 
   const INTERACTIVE_RE = /:(?:hover|focus(?:-visible|-within)?|active|checked|visited|target)\b/i;
   let interactiveSheetEl = null;
+  const interactiveRules   = new Map();    // selectorText -> declaration string (deduped, last wins)
+  const sheetRuleProgress  = new WeakMap();// CSSStyleSheet -> count of top-level rules already scanned
+  const fetchedHrefs       = new Set();    // cross-origin hrefs already fetched (or attempted)
+  let interactiveDirty     = false;
+
+  // Best-effort var(--name[, fallback]) resolution against :root computed styles.
+  // Interactive rules read from stylesheet text keep var() unresolved; we can't
+  // know the element's cascade, so :root is a pragmatic approximation that covers
+  // the common "design tokens on :root" pattern. A few passes resolve nesting.
+  let _rootStyle = null;
+  function rootStyle() {
+    if (_rootStyle) return _rootStyle;
+    try { _rootStyle = getComputedStyle(document.documentElement); } catch { _rootStyle = null; }
+    return _rootStyle;
+  }
+  const VAR_RE = /var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*))?\)/g;
+  function resolveVars(value) {
+    if (!value || value.indexOf('var(') === -1) return value;
+    let out = value;
+    for (let pass = 0; pass < 3 && out.indexOf('var(') !== -1; pass++) {
+      const prev = out;
+      out = out.replace(VAR_RE, (m, name, fallback) => {
+        const rs = rootStyle();
+        const v = rs ? rs.getPropertyValue(name).trim() : '';
+        if (v) return v;
+        if (fallback !== undefined) return fallback.trim();
+        return m; // leave unresolved
+      });
+      if (out === prev) break;
+    }
+    return out;
+  }
 
   function pushFlipped(out, prop, value, flipFn) {
     if (!value) return;
     value = value.trim();
-    if (!value || value.indexOf('var(') !== -1) return; // skip values that depend on CSS vars
+    if (!value) return;
+    if (value.indexOf('var(') !== -1) {
+      value = resolveVars(value);
+      if (value.indexOf('var(') !== -1) return; // still unresolved — skip
+    }
     const f = flipFn(value);
     if (f) out.push(prop + ':' + f + ' !important;');
   }
@@ -344,10 +387,13 @@
   function collectInteractiveDecls(style) {
     const out = [];
     pushFlipped(out, 'background-color', style.getPropertyValue('background-color'), flipBg);
-    const bgImg = (style.getPropertyValue('background-image') || '').trim();
-    if (bgImg && bgImg.indexOf('gradient') !== -1 && bgImg.indexOf('var(') === -1) {
-      const f = flipBackgroundImage(bgImg);
-      if (f) out.push('background-image:' + f + ' !important;');
+    let bgImg = (style.getPropertyValue('background-image') || '').trim();
+    if (bgImg && bgImg.indexOf('gradient') !== -1) {
+      if (bgImg.indexOf('var(') !== -1) bgImg = resolveVars(bgImg);
+      if (bgImg.indexOf('var(') === -1) {
+        const f = flipBackgroundImage(bgImg);
+        if (f) out.push('background-image:' + f + ' !important;');
+      }
     }
     pushFlipped(out, 'color',               style.getPropertyValue('color'),               flipFg);
     pushFlipped(out, 'border-color',        style.getPropertyValue('border-color'),        flipBg);
@@ -361,31 +407,41 @@
     return out.length ? out.join('') : null;
   }
 
-  function walkCssRules(rules, overrides) {
-    for (let i = 0; i < rules.length; i++) {
-      const rule = rules[i];
-      // CSSRule.STYLE_RULE === 1
-      if (rule.type === 1) {
-        const sel = rule.selectorText;
-        if (!sel || !INTERACTIVE_RE.test(sel)) continue;
-        const decls = collectInteractiveDecls(rule.style);
-        if (decls) overrides.push(sel + '{' + decls + '}');
-      } else if (rule.cssRules) {
-        // CSSGroupingRule: @media, @supports, @layer, etc.
-        walkCssRules(rule.cssRules, overrides);
+  function walkRule(rule) {
+    // CSSRule.STYLE_RULE === 1
+    if (rule.type === 1) {
+      const sel = rule.selectorText;
+      if (!sel || !INTERACTIVE_RE.test(sel)) return;
+      const decls = collectInteractiveDecls(rule.style);
+      if (decls && interactiveRules.get(sel) !== decls) {
+        interactiveRules.set(sel, decls);
+        interactiveDirty = true;
       }
+    } else if (rule.cssRules) {
+      // CSSGroupingRule: @media, @supports, @layer, etc.
+      const sub = rule.cssRules;
+      for (let i = 0; i < sub.length; i++) walkRule(sub[i]);
     }
   }
 
-  function injectInteractiveOverrides(overrides) {
-    if (!overrides.length) return;
+  function walkCssRules(rules) {
+    for (let i = 0; i < rules.length; i++) walkRule(rules[i]);
+  }
+
+  function flushInteractive() {
+    if (!interactiveDirty) return;
+    interactiveDirty = false;
+    if (!interactiveRules.size) return;
     if (!interactiveSheetEl) {
       interactiveSheetEl = document.createElement('style');
-      interactiveSheetEl.id = 'quickdark-interactive';
+      interactiveSheetEl.id = 'nocturne-interactive';
     }
-    interactiveSheetEl.textContent = overrides.join('\n');
+    let css = '';
+    interactiveRules.forEach((decls, sel) => { css += sel + '{' + decls + '}\n'; });
+    interactiveSheetEl.textContent = css;
     const head = document.head || document.documentElement;
-    // Re-append at the end so we win source-order tiebreak.
+    // Re-append at the end so we win the source-order tiebreak even after the
+    // page (or a CSS-in-JS library) injects more sheets later.
     head.appendChild(interactiveSheetEl);
   }
 
@@ -406,31 +462,40 @@
   }
 
   async function processInteractiveStylesheets() {
-    const overrides = [];
-    const externalHrefs = new Set();
+    const externalHrefs = [];
     const sheets = document.styleSheets;
+    const ourPseudoNode = pseudoSheet ? pseudoSheet.ownerNode : null;
 
-    // First pass: read whatever we can directly.
+    // First pass: read whatever we can directly, scanning only rules we haven't
+    // seen yet on each sheet.
     for (let i = 0; i < sheets.length; i++) {
       const sheet = sheets[i];
       if (sheet.ownerNode === interactiveSheetEl) continue;
+      if (ourPseudoNode && sheet.ownerNode === ourPseudoNode) continue;
       let rules = null;
       try { rules = sheet.cssRules; }
       catch {
-        // Cross-origin SecurityError — queue for re-fetch.
-        if (sheet.href) externalHrefs.add(sheet.href);
+        // Cross-origin SecurityError — queue for re-fetch (once).
+        if (sheet.href && !fetchedHrefs.has(sheet.href)) externalHrefs.push(sheet.href);
         continue;
       }
-      if (rules) walkCssRules(rules, overrides);
+      if (!rules) continue;
+      const start = sheetRuleProgress.get(sheet) || 0;
+      if (start >= rules.length) continue;        // nothing new since last scan
+      for (let j = start; j < rules.length; j++) walkRule(rules[j]);
+      sheetRuleProgress.set(sheet, rules.length);
     }
 
     // Apply same-origin overrides immediately so the user sees something fast.
-    injectInteractiveOverrides(overrides);
+    flushInteractive();
 
-    if (externalHrefs.size === 0) return;
+    if (!externalHrefs.length) return;
+
+    // Mark before awaiting so a concurrent pass can't double-fetch the same href.
+    for (const href of externalHrefs) fetchedHrefs.add(href);
 
     // Second pass: fetch + parse the cross-origin sheets in parallel.
-    const fetched = await Promise.all([...externalHrefs].map(async href => {
+    const fetched = await Promise.all(externalHrefs.map(async href => {
       const text = await fetchCssText(href);
       if (!text) return null;
       try {
@@ -444,10 +509,22 @@
 
     for (const sheet of fetched) {
       if (!sheet) continue;
-      try { walkCssRules(sheet.cssRules, overrides); } catch {}
+      try { walkCssRules(sheet.cssRules); } catch {}
     }
 
-    injectInteractiveOverrides(overrides);
+    flushInteractive();
+  }
+
+  // Debounced re-run, triggered when new <style>/<link> nodes appear (CSS-in-JS
+  // libraries such as Emotion / styled-components mount styles after load).
+  let interactiveScheduled = false;
+  function scheduleInteractive() {
+    if (interactiveScheduled) return;
+    interactiveScheduled = true;
+    setTimeout(() => {
+      interactiveScheduled = false;
+      processInteractiveStylesheets();
+    }, 200);
   }
 
   // ---------- end interactive state pass ----------
@@ -458,12 +535,15 @@
   function ensurePseudoSheet() {
     if (pseudoSheet) return pseudoSheet;
     const s = document.createElement('style');
-    s.id = 'quickdark-pseudo';
+    s.id = 'nocturne-pseudo';
     (document.head || document.documentElement).appendChild(s);
     pseudoSheet = s.sheet;
     return pseudoSheet;
   }
 
+  // Collect-phase: read the pseudo's computed style and queue an override.
+  // The actual id attribute + insertRule happen in flushWrites() so the read
+  // phase stays free of DOM writes (keeps style recalc from thrashing).
   function processPseudo(el, which) {
     let cs;
     try { cs = getComputedStyle(el, which); } catch { return; }
@@ -475,30 +555,28 @@
     const newFg = flipFg(cs.color);
     if (!newBg && !newFg) return;
 
-    let id = el.getAttribute(PSEUDO_ATTR);
-    if (!id) {
-      id = String(++pseudoUid);
-      el.setAttribute(PSEUDO_ATTR, id);
-    }
-
     let body = '';
     if (newBg) body += `background-color:${newBg} !important;`;
     if (newFg) body += `color:${newFg} !important;`;
 
-    const sheet = ensurePseudoSheet();
-    try {
-      sheet.insertRule(`[${PSEUDO_ATTR}="${id}"]${which}{${body}}`, sheet.cssRules.length);
-    } catch { /* ignore */ }
+    pseudoWrites.push(el, which, body);
   }
 
   let seen = new WeakSet();
+
+  // Pending DOM writes, collected during the read phase and applied in
+  // flushWrites(). styleWrites is a flat [el, prop, value, ...] triple list;
+  // pseudoWrites is a flat [el, which, body, ...] triple list.
+  const styleWrites  = [];
+  const pseudoWrites = [];
 
   function processElement(el) {
     if (seen.has(el)) return;
     seen.add(el);
 
-    // Escape hatch: data-quickdark-skip on self or any ancestor opts out.
-    if (typeof el.closest === 'function' && el.closest('[' + SKIP_ATTR + ']')) return;
+    // Escape hatch: data-nocturne-skip (or legacy data-quickdark-skip) on self
+    // or any ancestor opts out.
+    if (typeof el.closest === 'function' && el.closest(SKIP_SELECTOR)) return;
 
     // <img>: dispatch to image handler and stop.
     if (el.tagName === 'IMG') { handleImg(el); return; }
@@ -508,31 +586,59 @@
     if (!cs) return;
 
     const newBg = flipBg(cs.backgroundColor);
-    if (newBg) el.style.setProperty('background-color', newBg, 'important');
+    if (newBg) styleWrites.push(el, 'background-color', newBg);
 
     const newBgImg = flipBackgroundImage(cs.backgroundImage);
-    if (newBgImg) el.style.setProperty('background-image', newBgImg, 'important');
+    if (newBgImg) styleWrites.push(el, 'background-image', newBgImg);
 
     const newFg = flipFg(cs.color);
-    if (newFg) el.style.setProperty('color', newFg, 'important');
+    if (newFg) styleWrites.push(el, 'color', newFg);
 
     // SVG paint: fill / stroke (applies to <svg> and all SVG descendants)
     if (el.namespaceURI === SVG_NS) {
       const fillStr = cs.fill;
       if (fillStr && fillStr !== 'none' && fillStr !== '') {
         const nf = flipSvgPaint(fillStr);
-        if (nf) el.style.setProperty('fill', nf, 'important');
+        if (nf) styleWrites.push(el, 'fill', nf);
       }
       const strokeStr = cs.stroke;
       if (strokeStr && strokeStr !== 'none' && strokeStr !== '') {
         const ns = flipSvgPaint(strokeStr);
-        if (ns) el.style.setProperty('stroke', ns, 'important');
+        if (ns) styleWrites.push(el, 'stroke', ns);
       }
       return;  // SVG elements don't render ::before / ::after
     }
 
     processPseudo(el, '::before');
     processPseudo(el, '::after');
+  }
+
+  // Write-phase: apply everything collected during the read phase in one go.
+  // Splitting reads from writes means getComputedStyle never runs against a
+  // style tree we just dirtied, so the browser does far fewer recalcs.
+  function flushWrites() {
+    for (let i = 0; i < styleWrites.length; i += 3) {
+      styleWrites[i].style.setProperty(styleWrites[i + 1], styleWrites[i + 2], 'important');
+    }
+    styleWrites.length = 0;
+
+    if (pseudoWrites.length) {
+      const sheet = ensurePseudoSheet();
+      for (let i = 0; i < pseudoWrites.length; i += 3) {
+        const el = pseudoWrites[i];
+        const which = pseudoWrites[i + 1];
+        const body = pseudoWrites[i + 2];
+        let id = el.getAttribute(PSEUDO_ATTR);
+        if (!id) {
+          id = String(++pseudoUid);
+          el.setAttribute(PSEUDO_ATTR, id);
+        }
+        try {
+          sheet.insertRule(`[${PSEUDO_ATTR}="${id}"]${which}{${body}}`, sheet.cssRules.length);
+        } catch { /* ignore */ }
+      }
+      pseudoWrites.length = 0;
+    }
   }
 
   function walk(root) {
@@ -565,6 +671,7 @@
     const batch = pending.splice(0);
     if (mo) mo.disconnect();
     for (let i = 0; i < batch.length; i++) walk(batch[i]);
+    flushWrites();
     if (mo) observe();
   }
   function schedule(node) {
@@ -583,6 +690,7 @@
     const root = document.documentElement;
     if (root) processElement(root);
     if (document.body) walk(document.body);
+    flushWrites();
     if (mo) observe();
   }
 
@@ -591,19 +699,31 @@
     mo.observe(document.documentElement, { childList: true, subtree: true });
   }
 
+  // True if an added subtree introduces stylesheet(s) we should re-scan for
+  // interactive rules.
+  function bringsStylesheet(n) {
+    if (n.tagName === 'STYLE' || n.tagName === 'LINK') return true;
+    return !!(n.querySelector && n.firstElementChild && n.querySelector('style,link[rel="stylesheet"]'));
+  }
+
   function start() {
     const root = document.documentElement;
     if (root) processElement(root);
     if (document.body) walk(document.body);
+    flushWrites();
 
     mo = new MutationObserver(muts => {
+      let sawSheet = false;
       for (let i = 0; i < muts.length; i++) {
         const added = muts[i].addedNodes;
         for (let j = 0; j < added.length; j++) {
           const n = added[j];
-          if (n.nodeType === 1) schedule(n);
+          if (n.nodeType !== 1) continue;
+          schedule(n);
+          if (!sawSheet && bringsStylesheet(n)) sawSheet = true;
         }
       }
+      if (sawSheet) scheduleInteractive();
     });
     observe();
 
@@ -629,13 +749,13 @@
   }
 
   // Debug hook: open DevTools console and run e.g.
-  //   __QUICKDARK__.parseRgb('oklch(1 0 0)')   -> should return [255,255,255,1]
-  //   __QUICKDARK__.flipBg('oklch(1 0 0)')      -> should return a dark rgb(...)
-  //   __QUICKDARK__.resync()                   -> force re-walk of the page
-  // If __QUICKDARK__ is undefined, the old script is still cached — reload the extension.
+  //   __NOCTURNE__.parseRgb('oklch(1 0 0)')   -> should return [255,255,255,1]
+  //   __NOCTURNE__.flipBg('oklch(1 0 0)')      -> should return a dark rgb(...)
+  //   __NOCTURNE__.resync()                    -> force re-walk of the page
+  // If __NOCTURNE__ is undefined, the old script is still cached — reload the extension.
   try {
-    window.__QUICKDARK__ = {
-      version: '1.5.0',
+    window.__NOCTURNE__ = {
+      version: '1.6.0',
       parseRgb, flipBg, flipFg, flipSvgPaint,
       resync,
       processInteractiveStylesheets,

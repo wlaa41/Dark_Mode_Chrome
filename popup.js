@@ -25,7 +25,14 @@ function normalizeHost(input) {
 }
 
 function send(msg) {
-  return new Promise(resolve => chrome.runtime.sendMessage(msg, resolve));
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage(msg, res => {
+      // Touch lastError so Chrome doesn't log "Unchecked runtime.lastError"
+      // when the service worker is briefly asleep; resolve undefined instead.
+      void chrome.runtime.lastError;
+      resolve(res);
+    });
+  });
 }
 
 function renderToggle(disabled) {
@@ -33,7 +40,7 @@ function renderToggle(disabled) {
     toggleEl.textContent = 'Not available on this page';
     toggleEl.className = 'btn primary';
     toggleEl.disabled = true;
-    hintEl.textContent = 'Quick Dark only runs on http / https pages.';
+    hintEl.textContent = 'Nocturne only runs on http / https pages.';
     return;
   }
   toggleEl.disabled = false;

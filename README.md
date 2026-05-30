@@ -1,25 +1,37 @@
-# Quick Dark
+# Nocturne 🌙
 
-> **Current working version: v1.5.0** — covers HSL flip with oklch/canvas normalization, pseudo-elements, SVG paint, image inversion (SVG fetch + small raster), per-site toggle, and `:hover` / `:focus` / `:active` overrides via stylesheet pass with cross-origin re-fetch.
+> **Tone-preserving dark mode for every site.**
+> **Current version: v1.6.0** — HSL flip with oklch/canvas normalization, pseudo-elements, SVG paint, image inversion (SVG fetch + small raster), per-site toggle, and `:hover` / `:focus` / `:active` overrides via an incremental, cached stylesheet pass with cross-origin re-fetch, `var()` resolution, and live re-styling for CSS-in-JS pages.
 
-
-A small Chrome extension (Manifest V3) that turns bright websites into a dark theme by HSL-flipping colors per element. Hue and tone are preserved — dark blue becomes a vivid bright blue, not pastel.
+Nocturne is a small Chrome extension (Manifest V3) that turns bright websites into a dark theme by HSL-flipping colors per element. Hue and tone are preserved — dark blue becomes a vivid bright blue, not pastel — so the brand character of each page survives the flip.
 
 ## Features
 
 - **Tone-preserving color flips.** Bright backgrounds invert to dark; dark text inverts to bright. Hue and saturation are preserved so the brand character of the page stays recognizable.
-- **Punchy contrast.** Achromatic darks snap to near-white (`L ≥ 0.9`); chromatic darks land at `L ≈ 0.6–0.75` with a small saturation bump so they read vivid rather than washed-out.
+- **Punchy contrast.** Achromatic darks snap to near-white (`L ≥ 0.9`); chromatic darks land at `L ≈ 0.72–0.88` with a small saturation bump so they read vivid rather than washed-out.
 - **Modern color formats.** `oklch()`, `oklab()`, `lab()`, `lch()`, `hsl()`, `hwb()`, `color()`, named colors, hex, and `rgb()/rgba()` all parse, via a Canvas2D `fillStyle` round-trip. Falls back to lightness-only extraction if canvas can't normalize.
 - **Background gradients.** `linear-gradient(...)` and friends have each color stop flipped (any CSS color function inside).
-- **Pseudo-elements.** `::before` and `::after` are recolored via a generated stylesheet keyed on `data-quickdark` ids.
+- **Pseudo-elements.** `::before` and `::after` are recolored via a generated stylesheet keyed on `data-nocturne` ids.
 - **Shadow DOM.** The walker pierces open shadow roots.
+- **Interactive states.** `:hover` / `:focus` / `:active` / `:checked` rules are flipped through a dedicated stylesheet pass, including cross-origin sheets (re-fetched via the service worker) and `var(--token)` values resolved against `:root`.
+- **Live re-styling.** CSS-in-JS libraries (Emotion, styled-components, etc.) mount `<style>` tags *after* load. A `MutationObserver` watches for new `<style>` / `<link rel=stylesheet>` and re-runs the interactive pass (debounced), so hover states on React-heavy sites get flipped too.
 - **Per-site toggle** (toolbar popup). The disabled list is persisted in `chrome.storage.local` and applied via `excludeMatches`, so disabled sites get **zero injection** — no flash, no perf hit.
 - **Manual hostname add/remove** from the popup, for sites you're not currently on.
 - **No FOUC.** A 1-line CSS file paints `html` dark at `document_start` before any paint.
 
+## Performance
+
+Nocturne is built to stay cheap even on large, dynamic pages:
+
+- **Read/write split.** The DOM walk reads every element's computed style **first**, then applies all inline overrides in a single batch. Because `getComputedStyle` never runs against a style tree we just dirtied, the browser does far fewer style recalcs than a naive read-then-write-per-element loop.
+- **Incremental interactive pass.** Each stylesheet remembers how many rules we've already scanned, so when a CSS-in-JS library appends rules we only pay for the new ones — not a full re-scan.
+- **Fetch-once cross-origin sheets.** Every cross-origin href is fetched at most once; later passes reuse the result instead of re-downloading.
+- **Cached color math.** `flipBg` / `flipFg` / canvas-normalize results are memoized, so repeated colors are essentially free.
+- **Batched mutations.** DOM mutations are coalesced via `requestIdleCallback` (→ `requestAnimationFrame` → `setTimeout`).
+
 ## SVG and image handling
 
-Dark-on-white logos go invisible the moment the background flips, so Quick Dark handles three image cases:
+Dark-on-white logos go invisible the moment the background flips, so Nocturne handles three image cases:
 
 | Case | What we do |
 |---|---|
@@ -33,17 +45,17 @@ The current behavior is **"always invert"** for everything in the table above. T
 
 ### Skipping a specific element
 
-Add the attribute **`data-quickdark-skip`** to any element you don't want touched. The element *and all its descendants* are left alone:
+Add the attribute **`data-nocturne-skip`** to any element you don't want touched. The element *and all its descendants* are left alone:
 
 ```html
-<img data-quickdark-skip src="profile-photo.png">
+<img data-nocturne-skip src="profile-photo.png">
 
-<div data-quickdark-skip>
+<div data-nocturne-skip>
   <!-- everything in here keeps its original colors and images -->
 </div>
 ```
 
-This is the official escape hatch. The skip check uses `Element.closest()`, so the attribute on an ancestor covers everything beneath.
+This is the official escape hatch. The skip check uses `Element.closest()`, so the attribute on an ancestor covers everything beneath. The legacy `data-quickdark-skip` attribute is still honored.
 
 ## Tuning
 
@@ -52,7 +64,8 @@ All knobs live as constants near the top of `content.js`:
 | Constant | Default | Effect |
 |---|---|---|
 | `BG_LIGHT_THRESHOLD` | `0.55` | A background flips only if its lightness is above this. Lower = catch more off-whites; raise to leave mid-light backgrounds alone. |
-| `FG_DARK_THRESHOLD` | `0.55` | A text color flips only if its lightness is below this. |
+| `FG_DARK_THRESHOLD` | `0.55` | An achromatic text color flips only if its lightness is below this. |
+| `FG_CHROMATIC_THRESHOLD` | `0.80` | A chromatic text color flips (and brightens) only if its lightness is below this. |
 | `RASTER_ICON_MAX_PX` | `100` | Raster `<img>` larger than this in either dimension is treated as a photo and left untouched. Lower = fewer images touched. |
 | `CSS_INVERT_FILTER` | `invert(1) hue-rotate(180deg)` | Fallback filter for external SVGs and small raster icons. Use `invert(1)` for straight inversion without hue rotate. |
 
@@ -60,7 +73,7 @@ The `transformBg` and `transformFg` functions next to those constants control ho
 
 ## Per-site disable (popup)
 
-Click the **Quick Dark** toolbar icon:
+Click the **Nocturne** toolbar icon:
 
 - The current site shows at the top with one button that toggles it on or off here. Clicking reloads the tab.
 - Below it, every disabled site is listed with `×` to re-enable.
@@ -70,43 +83,46 @@ The disabled list lives in `chrome.storage.local` under `disabledSites`. Disable
 
 ## Debug
 
-Open DevTools on a page where Quick Dark is active, then in the console:
+Open DevTools on a page where Nocturne is active, then in the console:
 
 ```js
-__QUICKDARK__.version                          // "1.3.0"
-__QUICKDARK__.parseRgb('oklch(1 0 0)')         // [255, 255, 255, 1]
-__QUICKDARK__.flipBg('oklch(1 0 0)')           // dark rgb(...)
-__QUICKDARK__.flipFg('rgb(0, 0, 139)')         // bright vivid blue
-__QUICKDARK__.flipSvgPaint('rgb(20, 20, 20)')  // bright fill replacement
-__QUICKDARK__.resync()                         // force a full re-walk now
+__NOCTURNE__.version                          // "1.6.0"
+__NOCTURNE__.parseRgb('oklch(1 0 0)')         // [255, 255, 255, 1]
+__NOCTURNE__.flipBg('oklch(1 0 0)')           // dark rgb(...)
+__NOCTURNE__.flipFg('rgb(0, 0, 139)')         // bright vivid blue
+__NOCTURNE__.flipSvgPaint('rgb(20, 20, 20)')  // bright fill replacement
+__NOCTURNE__.resync()                         // force a full re-walk now
+__NOCTURNE__.processInteractiveStylesheets()  // re-run the :hover/:focus pass
 ```
 
-If `__QUICKDARK__` is `undefined`, the script didn't load on this page — reload at `chrome://extensions` (click ↻ on Quick Dark) and hard-refresh the page (`Ctrl+Shift+R`).
+If `__NOCTURNE__` is `undefined`, the script didn't load on this page — reload at `chrome://extensions` (click ↻ on Nocturne) and hard-refresh the page (`Ctrl+Shift+R`).
 
 ## How it works
 
 1. **Background service worker** (`background.js`) registers `content.js` + `early.css` for `<all_urls>` via `chrome.scripting.registerContentScripts`. Disabled sites are passed in `excludeMatches`.
 2. **`early.css`** sets `html { background-color: #121212 !important }` at `document_start`. Kills the white flash before any of the page's CSS paints.
-3. **`content.js`** walks the DOM at `DOMContentLoaded`, then again on every added node via `MutationObserver`. One follow-up resync runs on the `load` event so any stylesheets / images that finished after the first walk are picked up. Earlier timed resyncs (800 ms / 2500 ms) were removed because they caused visible flicker on pages whose styles settled quickly.
+3. **`content.js`** walks the DOM at `DOMContentLoaded`, then again on every added node via `MutationObserver`. One follow-up resync runs on the `load` event so any stylesheets / images that finished after the first walk are picked up. The walk reads all computed styles first, then writes the inline overrides in one batch.
 4. For each element, computed `background-color`, `background-image`, `color`, `fill`, and `stroke` are read, converted via cached `flipBg`/`flipFg`/`flipSvgPaint`, and written back as inline `!important`. Inline `!important` beats any author stylesheet rule.
 5. `<img>` elements dispatch to the image handler (see the SVG table above).
-6. Pseudo-elements are tagged via `data-quickdark="N"` on the host and styled via a dedicated `<style>` tag.
+6. Pseudo-elements are tagged via `data-nocturne="N"` on the host and styled via a dedicated `<style>` tag.
+7. Interactive (`:hover` etc.) rules are read from the page's stylesheets — incrementally and cached — flipped, and re-emitted in a single `nocturne-interactive` stylesheet appended last so it wins source order. New stylesheets added at runtime trigger a debounced re-run.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `manifest.json` | MV3 manifest. Service worker, popup, permissions. |
-| `background.js` | Registers/updates content scripts; handles `getState` / `toggle` / `add` / `remove` messages from the popup. |
-| `content.js` | DOM walker + color/paint flipper + image handler. |
+| `manifest.json` | MV3 manifest. Service worker, popup, permissions, icons. |
+| `background.js` | Registers/updates content scripts; handles `getState` / `toggle` / `add` / `remove` / `fetchText` messages. |
+| `content.js` | DOM walker + color/paint flipper + image handler + interactive-state pass. |
 | `early.css` | Pre-paint dark canvas. |
 | `popup.html` / `popup.css` / `popup.js` | Toolbar popup UI. |
+| `icons/` | Crescent-moon toolbar icons (16/32/48/128 px). |
 
 ## Loading
 
 1. `chrome://extensions` → enable **Developer mode**.
 2. **Load unpacked** → pick this folder.
-3. Pin the **Quick Dark** icon to the toolbar.
+3. Pin the **Nocturne** icon to the toolbar.
 4. After any code edit: click ↻ next to the extension, then hard-refresh tabs (`Ctrl+Shift+R`).
 
 ## Known limits
@@ -116,13 +132,12 @@ If `__QUICKDARK__` is `undefined`, the script didn't load on this page — reloa
 - Cross-origin `<iframe>` content is each frame's own problem — the extension runs independently inside same-origin frames only.
 - Closed shadow roots are unreachable by design.
 - `<canvas>` / WebGL drawings paint themselves; we don't intercept.
+- `var()` in interactive rules is resolved against `:root` only, so tokens overridden deeper in the cascade may resolve to the root value.
 
-## Improvements to assess (next iteration)
+## Roadmap (next iteration)
 
-These are observed issues / opportunities that are **not** blocking v1.5.0 but should be looked at next:
+Done in v1.6.0: live re-styling for CSS-in-JS pages, `var()` resolution in interactive rules, and the read/write-split performance pass. Still open:
 
-- **Udemy search bar (hover state).** When hovering over the search bar / search icon on `udemy.com`, the visual treatment still feels off — needs investigation of the specific selector(s) involved (the input element, its wrapper, and the icon button each carry separate `:hover` rules) and whether they're hitting the same cross-origin sheet we already re-fetch, or a different one injected later by React.
-- **CSS-in-JS rules injected after page load.** Libraries like Emotion / styled-components mount `<style>` tags after `DOMContentLoaded` and after `load`. Today we run the interactive pass once at `start()` and once at `load`. Add a `MutationObserver` on `document.head` watching for new `<style>` / `<link rel=stylesheet>` and re-run the interactive pass when one appears.
-- **`var(--…)` values inside interactive rules.** We currently skip them — the flipper can't resolve a variable from a rule's source text. Resolve via `getComputedStyle(document.documentElement).getPropertyValue('--name')` at injection time, then run the flip on the resolved value.
-- **Box-shadow / outline on hover.** We don't process `box-shadow` colors — cards lifting on hover with a faint shadow can look harsh in dark mode. Lower-priority but worth doing.
-- **`<canvas>` / WebGL drawings paint themselves.** Out of scope, but worth noting if any future "dark" target relies on canvas charts.
+- **Box-shadow / outline on hover.** We process `outline-color` but not `box-shadow` colors — cards lifting on hover with a faint shadow can look harsh in dark mode. Lower-priority but worth doing.
+- **Per-element `var()` resolution.** Today interactive `var()` values resolve against `:root`. Resolving against the matched element's cascade would be more accurate for component-scoped tokens.
+- **`<canvas>` / WebGL drawings.** Out of scope (they paint their own pixels), but worth noting if any future "dark" target relies on canvas charts.
