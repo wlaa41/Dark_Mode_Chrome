@@ -1,6 +1,6 @@
 'use strict';
 
-const SCRIPT_ID = 'nocturne-main';
+const SCRIPT_ID = 'ash-main';
 const STORAGE_KEY = 'disabledSites';
 
 function hostToPattern(host) {
@@ -38,7 +38,7 @@ async function syncScripts() {
       await chrome.scripting.registerContentScripts([def]);
     }
   } catch (e) {
-    console.error('[Nocturne] syncScripts failed:', e);
+    console.error('[Ash] syncScripts failed:', e);
   }
 }
 

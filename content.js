@@ -4,7 +4,35 @@
   const BG_LIGHT_THRESHOLD       = 0.55;
   const FG_DARK_THRESHOLD        = 0.55;  // Achromatic text below this -> flip to near-white.
   const FG_CHROMATIC_THRESHOLD   = 0.80;  // Chromatic colors below this -> push to vivid bright.
-  const PSEUDO_ATTR              = 'data-nocturne';
+  const PSEUDO_ATTR              = 'data-ash';
+  const BORDER_SIDES            = ['top', 'right', 'bottom', 'left'];
+
+  // ---- Easy-to-edit config -------------------------------------------------
+  // Skip pages that are ALREADY dark, so we never wreck a site's own dark mode.
+  // Flip this to false to force Ash to run everywhere.
+  const SKIP_DARK_PAGES         = true;
+  // A page counts as "already dark" if its base background lightness is below
+  // this. Raise toward 0.5 to skip more (treat more pages as dark); lower to
+  // skip fewer.
+  const DARK_PAGE_THRESHOLD     = 0.32;
+  // Dark-surface band for near-grayscale backgrounds. White lands at
+  // SURFACE_DARK_L (the page canvas); lighter-gray surfaces fan out toward
+  // SURFACE_LIGHT_L. SURFACE_GAMMA < 1 expands the separation near white so
+  // stacked dark grays stay distinguishable (dark tones are perceptually
+  // closer together than light ones, so we deliberately spread them).
+  const SURFACE_DARK_L          = 0.11;
+  const SURFACE_LIGHT_L         = 0.30;
+  const SURFACE_GAMMA           = 0.6;
+  const CANVAS_CLASS            = 'ash-on';
+  // Blend modes that assume a LIGHT backdrop. On a darkened page they crush
+  // their element toward black, so we neutralize them to `normal`. (Lightening
+  // modes like screen/lighten are fine on dark and are left alone.)
+  const DARKENING_BLENDS        = new Set(['multiply', 'darken', 'color-burn', 'plus-darker']);
+  // SVG resource containers whose descendants must NOT be recolored — their
+  // paint is structural (mask luminance, clip geometry, filter/gradient defs),
+  // not visible color. Recoloring them silently breaks the graphic.
+  const SVG_DEFS_SELECTOR       = 'mask,clipPath,filter,defs,pattern,symbol,marker,linearGradient,radialGradient';
+  // --------------------------------------------------------------------------
 
   // Handles "rgb(r, g, b)", "rgb(r g b)", "rgb(r g b / a)" and "rgb(r g b / 50%)".
   const rgbReSingle = /rgba?\(\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)(?:\s*[,/]\s*([\d.]+%?))?\s*\)/;
@@ -164,12 +192,30 @@
     ];
   }
 
-  // Bright (>0.55 lightness) -> deep dark, hue kept.
-  //  - near-grayscale becomes uniform near-black (#141414-ish)
-  //  - tinted pastels become deep tinted dark
+  // Bright (>0.55 lightness) background -> dark, hue kept, NOT crushed to black.
+  //
+  //  - Near-grayscale (white / light-gray page & cards): mapped into a dark-
+  //    canvas band L[0.12 .. 0.20]. Near-white -> darkest (the page canvas);
+  //    surfaces just over the threshold stay a touch lighter, so stacked
+  //    cards/buttons keep a sense of elevation instead of all going pure black.
+  //  - Chromatic (colored buttons / badges): kept clearly colored. We land them
+  //    at a medium-dark L[0.24 .. 0.40] with saturation preserved, so a light-
+  //    blue button becomes a readable dark-blue — not a near-black blob.
   function transformBg(h, s, l) {
-    const newL = s < 0.08 ? 0.08 : Math.min(0.18, (1 - l) * 0.5);
-    return [h, s, newL];
+    if (s < 0.18) {
+      // Achromatic surfaces. Map input lightness [threshold..1] onto an output
+      // band [SURFACE_LIGHT_L..SURFACE_DARK_L] (inverted: white -> darkest).
+      // The gamma curve on the white end spreads near-white inputs further
+      // apart, so page / card / hover surfaces stay visually separated instead
+      // of collapsing into one indistinguishable near-black.
+      const span = 1 - BG_LIGHT_THRESHOLD;
+      const dn = Math.min(1, Math.max(0, (1 - l) / span)); // 0 at white, 1 at threshold
+      const newL = SURFACE_DARK_L + (SURFACE_LIGHT_L - SURFACE_DARK_L) * Math.pow(dn, SURFACE_GAMMA);
+      return [h, s, newL];
+    }
+    // Colored surface: lighter originals go darker, but clamp to a visible band.
+    const newL = Math.min(0.40, Math.max(0.24, 1 - l));
+    return [h, Math.min(1, s * 0.92 + 0.08), newL];
   }
 
   // Text/foreground transform.
@@ -216,6 +262,28 @@
     return out;
   }
 
+  // Borders define separation between regions. On dark backgrounds they must
+  // stay *visible* — so instead of flipping them like a fill (which pushes light
+  // dividers to near-black and kills the contrast), we land every border in a
+  // subtle mid-gray band L[0.30 .. 0.36] that reads as a separator against the
+  // dark surfaces. Hue is preserved but saturation is capped, since borders are
+  // usually near-neutral. Fully transparent borders are left alone.
+  const borderCache = new Map();
+  function flipBorder(colorStr) {
+    if (borderCache.has(colorStr)) return borderCache.get(colorStr);
+    const rgba = parseRgb(colorStr);
+    if (!rgba) { borderCache.set(colorStr, null); return null; }
+    const [r, g, b, a] = rgba;
+    if (a === 0) { borderCache.set(colorStr, null); return null; }
+    const [h, s] = rgbToHsl(r, g, b);
+    const ns = Math.min(s, 0.45);
+    const nl = 0.30 + Math.min(s, 0.5) * 0.12; // 0.30 neutral -> ~0.36 saturated
+    const [nr, ng, nb] = hslToRgb(h, ns, nl);
+    const out = a === 1 ? `rgb(${nr},${ng},${nb})` : `rgba(${nr},${ng},${nb},${a})`;
+    borderCache.set(colorStr, out);
+    return out;
+  }
+
   // linear-gradient(white, #f0f0f0) -> same gradient with each light stop flipped.
   // Matches every CSS color function inside the gradient (rgb, oklch, hsl, ...).
   function flipBackgroundImage(value) {
@@ -232,10 +300,11 @@
   // ---------- SVG / image handling ----------
 
   const SVG_NS                = 'http://www.w3.org/2000/svg';
-  const SKIP_ATTR             = 'data-nocturne-skip';
-  // Honor the legacy data-quickdark-skip attribute too, so existing markup keeps working.
-  const SKIP_SELECTOR         = '[' + SKIP_ATTR + '],[data-quickdark-skip]';
-  const IMG_PROCESSED_DATASET = 'nocturneImg';
+  const SKIP_ATTR             = 'data-ash-skip';
+  // Honor the legacy data-nocturne-skip / data-quickdark-skip attributes too,
+  // so markup from earlier versions keeps working.
+  const SKIP_SELECTOR         = '[' + SKIP_ATTR + '],[data-nocturne-skip],[data-quickdark-skip]';
+  const IMG_PROCESSED_DATASET = 'ashImg';
   const RASTER_ICON_MAX_PX    = 100;  // tweak in source to change icon size cutoff
   const CSS_INVERT_FILTER     = 'invert(1) hue-rotate(180deg)';
 
@@ -396,12 +465,12 @@
       }
     }
     pushFlipped(out, 'color',               style.getPropertyValue('color'),               flipFg);
-    pushFlipped(out, 'border-color',        style.getPropertyValue('border-color'),        flipBg);
-    pushFlipped(out, 'border-top-color',    style.getPropertyValue('border-top-color'),    flipBg);
-    pushFlipped(out, 'border-right-color',  style.getPropertyValue('border-right-color'),  flipBg);
-    pushFlipped(out, 'border-bottom-color', style.getPropertyValue('border-bottom-color'), flipBg);
-    pushFlipped(out, 'border-left-color',   style.getPropertyValue('border-left-color'),   flipBg);
-    pushFlipped(out, 'outline-color',       style.getPropertyValue('outline-color'),       flipBg);
+    pushFlipped(out, 'border-color',        style.getPropertyValue('border-color'),        flipBorder);
+    pushFlipped(out, 'border-top-color',    style.getPropertyValue('border-top-color'),    flipBorder);
+    pushFlipped(out, 'border-right-color',  style.getPropertyValue('border-right-color'),  flipBorder);
+    pushFlipped(out, 'border-bottom-color', style.getPropertyValue('border-bottom-color'), flipBorder);
+    pushFlipped(out, 'border-left-color',   style.getPropertyValue('border-left-color'),   flipBorder);
+    pushFlipped(out, 'outline-color',       style.getPropertyValue('outline-color'),       flipBorder);
     pushFlipped(out, 'fill',                style.getPropertyValue('fill'),                flipFg);
     pushFlipped(out, 'stroke',              style.getPropertyValue('stroke'),              flipFg);
     return out.length ? out.join('') : null;
@@ -434,7 +503,7 @@
     if (!interactiveRules.size) return;
     if (!interactiveSheetEl) {
       interactiveSheetEl = document.createElement('style');
-      interactiveSheetEl.id = 'nocturne-interactive';
+      interactiveSheetEl.id = 'ash-interactive';
     }
     let css = '';
     interactiveRules.forEach((decls, sel) => { css += sel + '{' + decls + '}\n'; });
@@ -535,7 +604,7 @@
   function ensurePseudoSheet() {
     if (pseudoSheet) return pseudoSheet;
     const s = document.createElement('style');
-    s.id = 'nocturne-pseudo';
+    s.id = 'ash-pseudo';
     (document.head || document.documentElement).appendChild(s);
     pseudoSheet = s.sheet;
     return pseudoSheet;
@@ -574,15 +643,24 @@
     if (seen.has(el)) return;
     seen.add(el);
 
-    // Escape hatch: data-nocturne-skip (or legacy data-quickdark-skip) on self
+    // Escape hatch: data-ash-skip (or legacy data-nocturne-skip / data-quickdark-skip) on self
     // or any ancestor opts out.
     if (typeof el.closest === 'function' && el.closest(SKIP_SELECTOR)) return;
+
+    let cs;
+    try { cs = getComputedStyle(el); } catch { cs = null; }
+
+    // Neutralize light-backdrop blend modes (multiply/darken/...). Without this,
+    // e.g. Amazon product photos — which use `mix-blend-mode: multiply` to melt
+    // a white frame into a white page — go near-black once we darken the page.
+    // Done before the <img> dispatch so images get the fix too.
+    if (cs && DARKENING_BLENDS.has(cs.mixBlendMode)) {
+      styleWrites.push(el, 'mix-blend-mode', 'normal');
+    }
 
     // <img>: dispatch to image handler and stop.
     if (el.tagName === 'IMG') { handleImg(el); return; }
 
-    let cs;
-    try { cs = getComputedStyle(el); } catch { return; }
     if (!cs) return;
 
     const newBg = flipBg(cs.backgroundColor);
@@ -594,8 +672,29 @@
     const newFg = flipFg(cs.color);
     if (newFg) styleWrites.push(el, 'color', newFg);
 
-    // SVG paint: fill / stroke (applies to <svg> and all SVG descendants)
+    // Borders: only recolor sides that are actually drawn (width > 0 and a real
+    // style), so we never paint lines onto elements that had none.
+    for (let s = 0; s < 4; s++) {
+      const side = BORDER_SIDES[s];
+      if (parseFloat(cs.getPropertyValue('border-' + side + '-width')) === 0) continue;
+      const style = cs.getPropertyValue('border-' + side + '-style');
+      if (!style || style === 'none' || style === 'hidden') continue;
+      const nb = flipBorder(cs.getPropertyValue('border-' + side + '-color'));
+      if (nb) styleWrites.push(el, 'border-' + side + '-color', nb);
+    }
+    // Outline (focus rings, etc.) — same subtle-separator treatment.
+    if (parseFloat(cs.outlineWidth) > 0 && cs.outlineStyle && cs.outlineStyle !== 'none') {
+      const no = flipBorder(cs.outlineColor);
+      if (no) styleWrites.push(el, 'outline-color', no);
+    }
+
+    // SVG paint: fill / stroke (applies to <svg> and all SVG descendants).
     if (el.namespaceURI === SVG_NS) {
+      // Skip elements inside <mask>/<clipPath>/<filter>/<defs>/gradients/etc.:
+      // their paint is structural. Recoloring a mask's contents broke Udemy's
+      // star ratings (the mask encodes the filled-star fraction by luminance),
+      // making every rating look identical.
+      if (el.closest && el.closest(SVG_DEFS_SELECTOR)) return;
       const fillStr = cs.fill;
       if (fillStr && fillStr !== 'none' && fillStr !== '') {
         const nf = flipSvgPaint(fillStr);
@@ -695,8 +794,41 @@
   }
 
   let mo = null;
+  let pageSkipped = false;
   function observe() {
     mo.observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  // --- Dark-canvas control + already-dark-site detection --------------------
+
+  // Toggle our pre-paint dark canvas (early.css `html.ash-on`). Removing it
+  // both lets us read the page's own background and leaves dark sites untouched.
+  function setCanvas(on) {
+    const el = document.documentElement;
+    if (!el) return;
+    try { el.classList.toggle(CANVAS_CLASS, on); } catch { /* sandbox */ }
+  }
+
+  // Lightness [0..1] of the page's OWN base background. We lift our canvas while
+  // measuring so we read the site, not ourselves. Returns 1 (treat as light)
+  // when nothing opaque is declared — the browser default is white.
+  function pageBaseLightness() {
+    const read = el => {
+      if (!el) return null;
+      let c;
+      try { c = parseRgb(getComputedStyle(el).backgroundColor); } catch { return null; }
+      return c && c[3] > 0 ? c : null;
+    };
+    setCanvas(false);
+    const c = read(document.body) || read(document.documentElement);
+    setCanvas(true);
+    if (!c) return 1;
+    const [, , l] = rgbToHsl(c[0], c[1], c[2]);
+    return l;
+  }
+
+  function isPageAlreadyDark() {
+    return pageBaseLightness() < DARK_PAGE_THRESHOLD;
   }
 
   // True if an added subtree introduces stylesheet(s) we should re-scan for
@@ -707,6 +839,15 @@
   }
 
   function start() {
+    // Already-dark site? Reveal its own background and do nothing else, so we
+    // never fight a theme the page already ships. Toggle SKIP_DARK_PAGES off
+    // (top of file) to force Ash to run regardless.
+    if (SKIP_DARK_PAGES && isPageAlreadyDark()) {
+      setCanvas(false);
+      pageSkipped = true;
+      return;
+    }
+
     const root = document.documentElement;
     if (root) processElement(root);
     if (document.body) walk(document.body);
@@ -742,6 +883,10 @@
     }
   }
 
+  // Add the dark canvas immediately (document_start) so light pages never
+  // flash white. It's lifted later if the page turns out to already be dark.
+  setCanvas(true);
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', start, { once: true });
   } else {
@@ -749,14 +894,16 @@
   }
 
   // Debug hook: open DevTools console and run e.g.
-  //   __NOCTURNE__.parseRgb('oklch(1 0 0)')   -> should return [255,255,255,1]
-  //   __NOCTURNE__.flipBg('oklch(1 0 0)')      -> should return a dark rgb(...)
-  //   __NOCTURNE__.resync()                    -> force re-walk of the page
-  // If __NOCTURNE__ is undefined, the old script is still cached — reload the extension.
+  //   __ASH__.parseRgb('oklch(1 0 0)')   -> should return [255,255,255,1]
+  //   __ASH__.flipBg('oklch(1 0 0)')      -> should return a dark rgb(...)
+  //   __ASH__.resync()                    -> force re-walk of the page
+  // If __ASH__ is undefined, the old script is still cached — reload the extension.
   try {
-    window.__NOCTURNE__ = {
-      version: '1.6.0',
-      parseRgb, flipBg, flipFg, flipSvgPaint,
+    window.__ASH__ = {
+      version: '1.9.0',
+      get skipped() { return pageSkipped; },
+      parseRgb, flipBg, flipFg, flipBorder, flipSvgPaint,
+      isPageAlreadyDark, pageBaseLightness, setCanvas,
       resync,
       processInteractiveStylesheets,
       fetchCssText,

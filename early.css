@@ -1,5 +1,10 @@
 /* Runs before page paint to prevent the flash of white.
-   Only sets a dark canvas; per-element colors are flipped by content.js. */
-html {
+   Only sets a dark canvas; per-element colors are flipped by content.js.
+
+   Keyed on the `ash-on` class (added to <html> by content.js at
+   document_start) so the canvas can be lifted again — both to read the
+   page's *own* background during dark-site detection, and to leave
+   already-dark sites completely untouched. */
+html.ash-on {
   background-color: #121212 !important;
 }

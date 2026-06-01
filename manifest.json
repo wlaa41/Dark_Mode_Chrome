@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Nocturne",
-  "version": "1.6.0",
+  "name": "Ash",
+  "version": "1.9.0",
   "description": "Tone-preserving dark mode for every site. Darkens bright pages while keeping each color's hue, with a one-click per-site toggle.",
   "permissions": ["storage", "scripting", "tabs"],
   "host_permissions": ["<all_urls>"],
@@ -16,7 +16,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Nocturne — toggle dark mode",
+    "default_title": "Ash — toggle dark mode",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",

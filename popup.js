@@ -40,7 +40,7 @@ function renderToggle(disabled) {
     toggleEl.textContent = 'Not available on this page';
     toggleEl.className = 'btn primary';
     toggleEl.disabled = true;
-    hintEl.textContent = 'Nocturne only runs on http / https pages.';
+    hintEl.textContent = 'Ash only runs on http / https pages.';
     return;
   }
   toggleEl.disabled = false;
