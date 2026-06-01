@@ -15,6 +15,7 @@ Ash is a small Chrome extension (Manifest V3) that turns bright websites into a 
 - **Modern color formats.** `oklch()`, `oklab()`, `lab()`, `lch()`, `hsl()`, `hwb()`, `color()`, named colors, hex, and `rgb()/rgba()` all parse, via a Canvas2D `fillStyle` round-trip. Falls back to lightness-only extraction if canvas can't normalize.
 - **Background gradients.** `linear-gradient(...)` and friends have each color stop flipped (any CSS color function inside).
 - **Pseudo-elements.** `::before` and `::after` are recolored via a generated stylesheet keyed on `data-ash` ids.
+- **Visible text caret.** On editable fields, an explicit dark `caret-color` (which our text-color flip wouldn't otherwise reach — e.g. eBay's search box) is flipped to a light, visible caret. `auto` carets already follow the flipped text color.
 - **Blend-mode aware.** Elements using a light-backdrop blend mode (`multiply` / `darken` / `color-burn`) — a common trick to melt a product photo's white frame into a white page — are reset to `normal`, so they don't crush to black once the page goes dark.
 - **SVG structure-safe.** Paint inside `<mask>` / `<clipPath>` / `<filter>` / `<defs>` / gradients is left untouched, because that "color" is structural (e.g. a luminance mask encoding a star-rating fraction). Only genuinely visible `fill` / `stroke` is flipped.
 - **Shadow DOM.** The walker pierces open shadow roots.
@@ -98,7 +99,7 @@ The disabled list lives in `chrome.storage.local` under `disabledSites`. Disable
 Open DevTools on a page where Ash is active, then in the console:
 
 ```js
-__ASH__.version                          // "1.9.0"
+__ASH__.version                          // "1.9.1"
 __ASH__.parseRgb('oklch(1 0 0)')         // [255, 255, 255, 1]
 __ASH__.flipBg('oklch(1 0 0)')           // dark rgb(...)
 __ASH__.flipFg('rgb(0, 0, 139)')         // bright vivid blue

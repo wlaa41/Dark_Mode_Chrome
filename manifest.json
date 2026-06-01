@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ash",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "description": "Tone-preserving dark mode for every site. Darkens bright pages while keeping each color's hue, with a one-click per-site toggle.",
   "permissions": ["storage", "scripting", "tabs"],
   "host_permissions": ["<all_urls>"],

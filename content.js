@@ -471,6 +471,7 @@
     pushFlipped(out, 'border-bottom-color', style.getPropertyValue('border-bottom-color'), flipBorder);
     pushFlipped(out, 'border-left-color',   style.getPropertyValue('border-left-color'),   flipBorder);
     pushFlipped(out, 'outline-color',       style.getPropertyValue('outline-color'),       flipBorder);
+    pushFlipped(out, 'caret-color',         style.getPropertyValue('caret-color'),         flipFg);
     pushFlipped(out, 'fill',                style.getPropertyValue('fill'),                flipFg);
     pushFlipped(out, 'stroke',              style.getPropertyValue('stroke'),              flipFg);
     return out.length ? out.join('') : null;
@@ -671,6 +672,17 @@
 
     const newFg = flipFg(cs.color);
     if (newFg) styleWrites.push(el, 'color', newFg);
+
+    // Caret color on editable fields. `auto` already follows our flipped text
+    // color, so it only breaks when a site sets an explicit dark caret-color
+    // (e.g. eBay's search box) — flip those to a light, visible caret.
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) {
+      const caret = cs.caretColor;
+      if (caret && caret !== 'auto') {
+        const nc = flipFg(caret);
+        if (nc) styleWrites.push(el, 'caret-color', nc);
+      }
+    }
 
     // Borders: only recolor sides that are actually drawn (width > 0 and a real
     // style), so we never paint lines onto elements that had none.
@@ -900,7 +912,7 @@
   // If __ASH__ is undefined, the old script is still cached — reload the extension.
   try {
     window.__ASH__ = {
-      version: '1.9.0',
+      version: '1.9.1',
       get skipped() { return pageSkipped; },
       parseRgb, flipBg, flipFg, flipBorder, flipSvgPaint,
       isPageAlreadyDark, pageBaseLightness, setCanvas,
