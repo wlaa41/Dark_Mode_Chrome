@@ -4,7 +4,6 @@
   const BG_LIGHT_THRESHOLD       = 0.55;
   const FG_DARK_THRESHOLD        = 0.55;  // Achromatic text below this -> flip to near-white.
   const FG_CHROMATIC_THRESHOLD   = 0.80;  // Chromatic colors below this -> push to vivid bright.
-  const PSEUDO_ATTR              = 'data-ash';
   const BORDER_SIDES            = ['top', 'right', 'bottom', 'left'];
 
   // ---- Easy-to-edit config -------------------------------------------------
@@ -306,6 +305,7 @@
   const SKIP_SELECTOR         = '[' + SKIP_ATTR + '],[data-nocturne-skip],[data-quickdark-skip]';
   const IMG_PROCESSED_DATASET = 'ashImg';
   const RASTER_ICON_MAX_PX    = 100;  // tweak in source to change icon size cutoff
+  const SVG_ICON_MAX_MIN_DIM  = 160;  // svg <img> bigger than this (smaller side) = artwork, skip
   const CSS_INVERT_FILTER     = 'invert(1) hue-rotate(180deg)';
 
   function looksLikeSvgSrc(src) {
@@ -313,26 +313,33 @@
     return /\.svg(\?|#|$)/i.test(src) || /^data:image\/svg/i.test(src);
   }
 
-  function isRasterSrc(src) {
-    if (!src) return false;
-    return /\.(png|jpe?g|gif|webp|avif|bmp|ico)(\?|#|$)/i.test(src)
-      || /^data:image\/(png|jpe?g|gif|webp|avif|bmp|x-icon)/i.test(src);
-  }
-
   function handleImg(img) {
     if (img.dataset[IMG_PROCESSED_DATASET]) return;
     img.dataset[IMG_PROCESSED_DATASET] = '1';
-    const src = img.currentSrc || img.src || '';
-    if (looksLikeSvgSrc(src)) {
-      inlineOrFilterSvgImg(img);
-    } else if (isRasterSrc(src)) {
-      maybeInvertRasterIcon(img);
-    }
+    const dispatch = () => {
+      const src = img.currentSrc || img.src || '';
+      if (looksLikeSvgSrc(src)) inlineOrFilterSvgImg(img);
+      else updateRasterFilter(img);
+    };
+    if (img.complete && img.naturalWidth > 0) dispatch();
+    // Re-run on EVERY load, not once: lazy loaders swap a tiny placeholder for
+    // the real photo on the SAME element. The old once-only handling kept the
+    // placeholder-era invert filter on the final product image (the "inverted
+    // photos on Temu" bug).
+    img.addEventListener('load', dispatch);
+    img.addEventListener('error', () => updateRasterFilter(img));
   }
 
   async function inlineOrFilterSvgImg(img) {
     const src = img.currentSrc || img.src;
     if (!src || !img.parentNode) return;
+    if (img.dataset.ashSvgBusy) return;
+    // Icon-sized only: a large SVG is artwork (illustration / product art) and
+    // recoloring its paths would corrupt the picture. 0x0 (not laid out yet)
+    // is treated as an icon, matching the old behavior.
+    const rect = img.getBoundingClientRect();
+    if (Math.min(rect.width, rect.height) > SVG_ICON_MAX_MIN_DIM) return;
+    img.dataset.ashSvgBusy = '1';
     try {
       const res = await fetch(src, { credentials: 'omit', cache: 'force-cache' });
       if (!res.ok) throw new Error('fetch ' + res.status);
@@ -363,24 +370,66 @@
 
       const adopted = document.importNode(svgEl, true);
       img.parentNode.replaceChild(adopted, img);
-      walk(adopted);
-      flushWrites();
+      enqueueWalk(adopted);
     } catch {
       // CORS-blocked, 404, parse error: CSS filter fallback
       img.style.setProperty('filter', CSS_INVERT_FILTER, 'important');
+      delete img.dataset.ashSvgBusy; // allow a retry if the src changes later
     }
   }
 
-  function maybeInvertRasterIcon(img) {
-    const apply = () => {
-      const nw = img.naturalWidth || 0;
-      const nh = img.naturalHeight || 0;
-      if (!nw || !nh) return;
-      if (nw > RASTER_ICON_MAX_PX || nh > RASTER_ICON_MAX_PX) return;
+  // Raster <img> policy. The old rule was "invert EVERY raster <= 100px" — on
+  // shopping sites that color-flipped product swatches, mini-thumbnails and
+  // avatars (the Temu complaint). Now we only invert when the pixels PROVE a
+  // dark, near-monochrome glyph (logo / icon shape). Cross-origin pixels we
+  // can't read -> never invert: a dark logo on a dark page beats a photo with
+  // wrong colors.
+  const ICON_SAMPLE_PX     = 24;        // downsample size for pixel stats
+  const iconDecisionCache  = new Map(); // src -> boolean
+
+  function rasterIconShouldInvert(img) {
+    const nw = img.naturalWidth || 0, nh = img.naturalHeight || 0;
+    if (!nw || !nh || nw > RASTER_ICON_MAX_PX || nh > RASTER_ICON_MAX_PX) return false;
+    const src = img.currentSrc || img.src || '';
+    if (iconDecisionCache.has(src)) return iconDecisionCache.get(src);
+    let invert = false;
+    try {
+      const c = document.createElement('canvas');
+      const w = Math.min(ICON_SAMPLE_PX, nw), h = Math.min(ICON_SAMPLE_PX, nh);
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, w, h);
+      const d = ctx.getImageData(0, 0, w, h).data; // throws if cross-origin
+      let opaque = 0, satSum = 0, lumSum = 0, vivid = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] < 16) continue;
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        const max = r > g ? (r > b ? r : b) : (g > b ? g : b);
+        const min = r < g ? (r < b ? r : b) : (g < b ? g : b);
+        opaque++;
+        satSum += max ? (max - min) / max : 0;
+        if (max - min > 60) vivid++;
+        lumSum += (r * 299 + g * 587 + b * 114) / 255000;
+      }
+      if (opaque) {
+        invert = (satSum / opaque) < 0.18   // overall near-grayscale
+              && (vivid / opaque) < 0.04    // almost no saturated pixels
+              && (lumSum / opaque) < 0.45;  // and dark -> it's a glyph
+      }
+    } catch { invert = false; }
+    iconDecisionCache.set(src, invert);
+    return invert;
+  }
+
+  function updateRasterFilter(img) {
+    if (rasterIconShouldInvert(img)) {
       img.style.setProperty('filter', CSS_INVERT_FILTER, 'important');
-    };
-    if (img.complete && img.naturalWidth > 0) apply();
-    else img.addEventListener('load', apply, { once: true });
+    } else if (img.style.getPropertyValue('filter') === CSS_INVERT_FILTER) {
+      // Clear a filter WE set earlier (e.g. for the tiny placeholder this
+      // element showed before the real photo loaded). A site's own filter
+      // never matches our exact value, so it is never touched.
+      img.style.removeProperty('filter');
+    }
   }
 
   function flipSvgPaint(colorStr) {
@@ -393,7 +442,7 @@
 
   // ---------- end SVG / image handling ----------
 
-  // ---------- interactive state (:hover, :focus, :active) stylesheet pass ----------
+  // ---------- stylesheet override pass (:hover etc. + ::before/::after) ----------
   //
   // At element-walk time, :hover/:focus/:active styles aren't yet active, so
   // we never set inline overrides. When the user hovers, the original CSS rule
@@ -402,11 +451,18 @@
   // include interactive pseudo-classes, flip their colors, and inject a
   // single dedicated stylesheet at the end of <head> with !important overrides.
   //
+  // Pseudo-ELEMENTS (::before/::after/::placeholder/...) ride the same pass:
+  // they can ONLY be styled from stylesheets, so flipping their rules here
+  // fully replaces the old per-element getComputedStyle(el, '::before') walk —
+  // which was 2 extra computed-style resolutions on EVERY element and a large
+  // part of why big pages felt slow. Colors a pseudo merely inherits are
+  // already covered by the inline flip on its host element.
+  //
   // The pass is incremental and cached: each stylesheet remembers how many
   // rules we've already scanned (so CSS-in-JS libraries that append rules only
   // cost us the new ones), and every cross-origin href is fetched at most once.
 
-  const INTERACTIVE_RE = /:(?:hover|focus(?:-visible|-within)?|active|checked|visited|target)\b/i;
+  const INTERACTIVE_RE = /:(?:hover|focus(?:-visible|-within)?|active|checked|visited|target)\b|::?(?:before|after|placeholder|marker|selection|first-line|first-letter)\b/i;
   let interactiveSheetEl = null;
   const interactiveRules   = new Map();    // selectorText -> declaration string (deduped, last wins)
   const sheetRuleProgress  = new WeakMap();// CSSStyleSheet -> count of top-level rules already scanned
@@ -510,9 +566,13 @@
     interactiveRules.forEach((decls, sel) => { css += sel + '{' + decls + '}\n'; });
     interactiveSheetEl.textContent = css;
     const head = document.head || document.documentElement;
-    // Re-append at the end so we win the source-order tiebreak even after the
-    // page (or a CSS-in-JS library) injects more sheets later.
-    head.appendChild(interactiveSheetEl);
+    // Append at the end so we win the source-order tiebreak — but ONLY when
+    // something actually mounted after us. A no-op re-append still invalidates
+    // every style on the page, which made the next getComputedStyle pay a
+    // full-document recalc inside our walk slice (a 100ms+ jank spike).
+    if (interactiveSheetEl.parentNode !== head || interactiveSheetEl.nextSibling) {
+      head.appendChild(interactiveSheetEl);
+    }
   }
 
   // Fetch a CSS file as text. Tries direct fetch first (works when CDN sends
@@ -534,14 +594,12 @@
   async function processInteractiveStylesheets() {
     const externalHrefs = [];
     const sheets = document.styleSheets;
-    const ourPseudoNode = pseudoSheet ? pseudoSheet.ownerNode : null;
 
     // First pass: read whatever we can directly, scanning only rules we haven't
     // seen yet on each sheet.
     for (let i = 0; i < sheets.length; i++) {
       const sheet = sheets[i];
       if (sheet.ownerNode === interactiveSheetEl) continue;
-      if (ourPseudoNode && sheet.ownerNode === ourPseudoNode) continue;
       let rules = null;
       try { rules = sheet.cssRules; }
       catch {
@@ -597,56 +655,23 @@
     }, 200);
   }
 
-  // ---------- end interactive state pass ----------
-
-  let pseudoSheet = null;
-  let pseudoUid = 0;
-
-  function ensurePseudoSheet() {
-    if (pseudoSheet) return pseudoSheet;
-    const s = document.createElement('style');
-    s.id = 'ash-pseudo';
-    (document.head || document.documentElement).appendChild(s);
-    pseudoSheet = s.sheet;
-    return pseudoSheet;
-  }
-
-  // Collect-phase: read the pseudo's computed style and queue an override.
-  // The actual id attribute + insertRule happen in flushWrites() so the read
-  // phase stays free of DOM writes (keeps style recalc from thrashing).
-  function processPseudo(el, which) {
-    let cs;
-    try { cs = getComputedStyle(el, which); } catch { return; }
-    if (!cs) return;
-    const content = cs.content;
-    if (!content || content === 'none' || content === 'normal') return;
-
-    const newBg = flipBg(cs.backgroundColor);
-    const newFg = flipFg(cs.color);
-    if (!newBg && !newFg) return;
-
-    let body = '';
-    if (newBg) body += `background-color:${newBg} !important;`;
-    if (newFg) body += `color:${newFg} !important;`;
-
-    pseudoWrites.push(el, which, body);
-  }
+  // ---------- end stylesheet override pass ----------
 
   let seen = new WeakSet();
 
   // Pending DOM writes, collected during the read phase and applied in
-  // flushWrites(). styleWrites is a flat [el, prop, value, ...] triple list;
-  // pseudoWrites is a flat [el, which, body, ...] triple list.
+  // flushWrites(). styleWrites is a flat [el, prop, value, ...] triple list.
   const styleWrites  = [];
-  const pseudoWrites = [];
 
   function processElement(el) {
     if (seen.has(el)) return;
     seen.add(el);
 
     // Escape hatch: data-ash-skip (or legacy data-nocturne-skip / data-quickdark-skip) on self
-    // or any ancestor opts out.
-    if (typeof el.closest === 'function' && el.closest(SKIP_SELECTOR)) return;
+    // or any ancestor opts out. skipPresent is refreshed once per walk slice —
+    // when no skip attribute exists anywhere (the common case) we save an
+    // el.closest() selector match on every single element.
+    if ((skipPresent || curListInShadow) && typeof el.closest === 'function' && el.closest(SKIP_SELECTOR)) return;
 
     let cs;
     try { cs = getComputedStyle(el); } catch { cs = null; }
@@ -719,9 +744,6 @@
       }
       return;  // SVG elements don't render ::before / ::after
     }
-
-    processPseudo(el, '::before');
-    processPseudo(el, '::after');
   }
 
   // Write-phase: apply everything collected during the read phase in one go.
@@ -732,77 +754,92 @@
       styleWrites[i].style.setProperty(styleWrites[i + 1], styleWrites[i + 2], 'important');
     }
     styleWrites.length = 0;
-
-    if (pseudoWrites.length) {
-      const sheet = ensurePseudoSheet();
-      for (let i = 0; i < pseudoWrites.length; i += 3) {
-        const el = pseudoWrites[i];
-        const which = pseudoWrites[i + 1];
-        const body = pseudoWrites[i + 2];
-        let id = el.getAttribute(PSEUDO_ATTR);
-        if (!id) {
-          id = String(++pseudoUid);
-          el.setAttribute(PSEUDO_ATTR, id);
-        }
-        try {
-          sheet.insertRule(`[${PSEUDO_ATTR}="${id}"]${which}{${body}}`, sheet.cssRules.length);
-        } catch { /* ignore */ }
-      }
-      pseudoWrites.length = 0;
-    }
   }
 
-  function walk(root) {
-    if (!root || root.nodeType !== 1) return;
-    processElement(root);
-    const list = root.getElementsByTagName('*');
-    for (let i = 0, n = list.length; i < n; i++) {
-      const el = list[i];
-      processElement(el);
-      const sr = el.shadowRoot;
-      if (sr) walkShadow(sr);
-    }
+  // ---------- time-sliced DOM walking ----------
+  //
+  // ALL walking (initial pass, mutation batches, resync) goes through one
+  // budgeted queue. Each slice processes elements for at most WALK_BUDGET_MS,
+  // flushes the collected writes in a single batch, and yields to the page.
+  // The old code walked the whole tree synchronously — on huge infinite-scroll
+  // DOMs (Temu and friends) that froze the main thread for whole seconds.
+
+  const WALK_BUDGET_MS = 12;
+
+  const walkQueue   = [];     // element roots whose subtrees still need work
+  const shadowQueue = [];     // shadow roots pending expansion
+  let curList = null;         // descendant list of the root being processed
+  let curIdx  = 0;
+  let curListInShadow = false;// shadow trees always run the closest() skip check
+  let walkScheduled = false;
+  let skipPresent = false;    // any data-ash-skip in the document? per-slice
+
+  function scheduleWalk() {
+    if (walkScheduled) return;
+    walkScheduled = true;
+    const cb = () => { walkScheduled = false; walkSlice(WALK_BUDGET_MS); };
+    if (window.requestIdleCallback) requestIdleCallback(cb, { timeout: 150 });
+    else if (window.requestAnimationFrame) requestAnimationFrame(cb);
+    else setTimeout(cb, 16);
   }
 
-  function walkShadow(root) {
-    let list;
-    try { list = root.querySelectorAll('*'); } catch { return; }
-    for (let i = 0, n = list.length; i < n; i++) {
-      const el = list[i];
-      processElement(el);
-      const sr = el.shadowRoot;
-      if (sr) walkShadow(sr);
-    }
+  function enqueueWalk(node) {
+    if (!node || node.nodeType !== 1) return;
+    walkQueue.push(node);
+    scheduleWalk();
   }
 
-  let scheduled = false;
-  const pending = [];
-  function flush() {
-    scheduled = false;
-    const batch = pending.splice(0);
+  // Advance to the next pending root; returns false when nothing is left.
+  function nextList() {
+    while (walkQueue.length) {
+      const root = walkQueue.shift();
+      if (!root.isConnected) continue;
+      processElement(root);
+      curList = root.getElementsByTagName('*');
+      curIdx = 0;
+      curListInShadow = false;
+      return true;
+    }
+    while (shadowQueue.length) {
+      const sr = shadowQueue.shift();
+      let list;
+      try { list = sr.querySelectorAll('*'); } catch { continue; }
+      curList = list;
+      curIdx = 0;
+      curListInShadow = true;
+      return true;
+    }
+    return false;
+  }
+
+  function walkSlice(budget) {
     if (mo) mo.disconnect();
-    for (let i = 0; i < batch.length; i++) walk(batch[i]);
+    skipPresent = !!document.querySelector(SKIP_SELECTOR);
+    const t0 = performance.now();
+    do {
+      if (!curList && !nextList()) break;
+      while (curIdx < curList.length) {
+        const el = curList[curIdx++];
+        processElement(el);
+        if (el.shadowRoot) shadowQueue.push(el.shadowRoot);
+        if (performance.now() - t0 > budget) break;
+      }
+      if (curList && curIdx >= curList.length) curList = null;
+    } while (performance.now() - t0 <= budget);
     flushWrites();
     if (mo) observe();
-  }
-  function schedule(node) {
-    pending.push(node);
-    if (scheduled) return;
-    scheduled = true;
-    (window.requestIdleCallback || window.requestAnimationFrame || setTimeout)(flush);
+    if (curList || walkQueue.length || shadowQueue.length) scheduleWalk();
   }
 
   // Full re-pass: stylesheets / lazy mounts may have changed computed colors
   // since the last walk. Reset 'seen' so every element gets re-checked; the
-  // color caches keep the HSL math cheap.
+  // color caches keep the HSL math cheap, and the slicer keeps it jank-free.
   function resync() {
-    if (mo) mo.disconnect();
     seen = new WeakSet();
-    const root = document.documentElement;
-    if (root) processElement(root);
-    if (document.body) walk(document.body);
-    flushWrites();
-    if (mo) observe();
+    walkQueue.length = 0;
+    shadowQueue.length = 0;
+    curList = null;
+    enqueueWalk(document.documentElement);
   }
 
   let mo = null;
@@ -860,11 +897,6 @@
       return;
     }
 
-    const root = document.documentElement;
-    if (root) processElement(root);
-    if (document.body) walk(document.body);
-    flushWrites();
-
     mo = new MutationObserver(muts => {
       let sawSheet = false;
       for (let i = 0; i < muts.length; i++) {
@@ -872,12 +904,19 @@
         for (let j = 0; j < added.length; j++) {
           const n = added[j];
           if (n.nodeType !== 1) continue;
-          schedule(n);
+          enqueueWalk(n);
           if (!sawSheet && bringsStylesheet(n)) sawSheet = true;
         }
       }
       if (sawSheet) scheduleInteractive();
     });
+
+    // No synchronous pre-paint walk: early.css already paints a dark canvas,
+    // dark body and readable default text, so we let the browser do its first
+    // paint (paying the initial full style resolution in ITS render pass, not
+    // inside our task) and start flipping in idle slices right after. On huge
+    // pages this is the difference between a frozen tab and a smooth load.
+    enqueueWalk(document.documentElement);
     observe();
 
     // First interactive-state pass: catch :hover/:focus/:active rules in the
@@ -912,7 +951,7 @@
   // If __ASH__ is undefined, the old script is still cached — reload the extension.
   try {
     window.__ASH__ = {
-      version: '1.9.1',
+      version: '2.0.0',
       get skipped() { return pageSkipped; },
       parseRgb, flipBg, flipFg, flipBorder, flipSvgPaint,
       isPageAlreadyDark, pageBaseLightness, setCanvas,

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ash-test",
+      "runtimeExecutable": "py",
+      "runtimeArgs": ["-m", "http.server", "8431", "--directory", "D:/Documents/Claude/dark-extention"],
+      "port": 8431
+    }
+  ]
+}

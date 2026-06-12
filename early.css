@@ -1,10 +1,21 @@
 /* Runs before page paint to prevent the flash of white.
-   Only sets a dark canvas; per-element colors are flipped by content.js.
+   Sets a dark canvas + readable default text; per-element colors are flipped
+   by content.js in idle slices after first paint.
 
    Keyed on the `ash-on` class (added to <html> by content.js at
    document_start) so the canvas can be lifted again — both to read the
    page's *own* background during dark-site detection, and to leave
-   already-dark sites completely untouched. */
+   already-dark sites completely untouched.
+
+   The body rules let the first paint happen WITHOUT waiting for the JS walk
+   (the walk used to run synchronously before paint, freezing big pages).
+   They are author-stylesheet !important, so the walker's inline !important
+   overrides replace them as soon as each element is processed. */
 html.ash-on {
   background-color: #121212 !important;
+  color-scheme: dark;
+}
+html.ash-on body {
+  background-color: #121212 !important;
+  color: #e8e8e8 !important;
 }

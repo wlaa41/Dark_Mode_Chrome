@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Turbo on already-dark site</title>
+<script src="shared.js"></script>
+<link rel="stylesheet" href="../turbo/turbo.css?v=4">
+<script src="../turbo/content.js?v=4"></script>
+<style>
+  /* an already-dark site (like YouTube dark) — Ash Turbo must do NOTHING */
+  body { background: #0f0f0f; color: #eee; font-family: sans-serif; margin: 0; padding: 16px; }
+  h1 { font-size: 18px; }
+  img.product { width: 130px; height: 130px; display: block; }
+  #results { font-size: 13px; background: #222; padding: 8px; }
+</style>
+</head>
+<body>
+<h1>Already-dark site — images must keep true colors</h1>
+<img id="photo" class="product" alt="">
+<pre id="results">running…</pre>
+<script>
+  document.getElementById('photo').src = makePhoto(260, 'DRK');
+  const f = el => getComputedStyle(el).filter;
+  setTimeout(() => {
+    report([
+      ['html got ash-skip-turbo class', document.documentElement.classList.contains('ash-skip-turbo')],
+      ['root filter is off',            f(document.documentElement) === 'none'],
+      ['image NOT inverted',            f(document.getElementById('photo')) === 'none'],
+    ]);
+  }, 800);
+</script>
+</body>
+</html>

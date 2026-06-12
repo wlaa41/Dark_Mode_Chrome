@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Ash",
-  "version": "2.0.0",
-  "description": "Tone-preserving dark mode for every site. Darkens bright pages while keeping each color's hue, with a one-click per-site toggle.",
-  "permissions": ["storage", "scripting", "tabs"],
+  "name": "Ash Turbo",
+  "version": "1.1.0",
+  "description": "High-performance, filter-based dark mode inspired by mobile browser engines.",
+  "permissions": ["storage", "scripting"],
   "host_permissions": ["<all_urls>"],
   "icons": {
     "16": "icons/icon16.png",
@@ -16,12 +16,21 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Ash — toggle dark mode",
+    "default_title": "Ash Turbo — toggle dark mode",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["turbo.css"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ]
 }

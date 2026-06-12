@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Turbo NEW</title>
+<script src="shared.js"></script>
+<!-- simulate the extension: turbo.css + content script -->
+<link rel="stylesheet" href="../turbo/turbo.css?v=4">
+<script src="../turbo/content.js?v=4"></script>
+<style>
+  body { background: #ffffff; color: #222; font-family: sans-serif; margin: 0; padding: 16px; }
+  h1 { font-size: 18px; }
+  .grid { display: flex; gap: 12px; flex-wrap: wrap; }
+  .card { width: 150px; border: 1px solid #ddd; padding: 8px; background: #fafafa; }
+  .card p { font-size: 12px; margin: 6px 0 0; }
+  img.product { width: 130px; height: 130px; display: block; }
+  /* stylesheet-set background image (what [style*=...] misses, JS must tag) */
+  .css-bg-tile { width: 130px; height: 130px; background-size: cover; }
+  #results { font-size: 13px; background: #eee; padding: 8px; }
+</style>
+</head>
+<body>
+<h1>Ash Turbo — NEW — Temu-pattern test</h1>
+<div class="grid">
+  <div class="card">
+    <picture><img id="picImg" class="product" alt=""></picture>
+    <p>&lt;picture&gt;&lt;img&gt; (Temu)</p>
+  </div>
+  <div class="card">
+    <div class="goods-img-wrap"><img id="wrapImg" class="product" alt=""></div>
+    <p>class="goods-img-wrap" &gt; img</p>
+  </div>
+  <div class="card">
+    <div id="cssBg" class="css-bg-tile"></div>
+    <p>stylesheet background-image</p>
+  </div>
+  <div class="card">
+    <div id="inlineBg" style="width:130px;height:130px;background-size:cover;">
+      <img id="nestedImg" alt="" style="width:60px;height:60px;margin:35px;">
+    </div>
+    <p>inline bg + nested img</p>
+  </div>
+  <div class="card">
+    <img id="plainImg" class="product" alt="">
+    <p>plain img</p>
+  </div>
+</div>
+<pre id="results">running…</pre>
+
+<script>
+  const photo = makePhoto(260, 'NEW');
+  document.getElementById('picImg').src = photo;
+  document.getElementById('wrapImg').src = photo;
+  document.getElementById('plainImg').src = photo;
+  document.getElementById('nestedImg').src = makePhoto(120, 'in');
+  // stylesheet-driven bg: inject a rule so it is NOT an inline style
+  const st = document.createElement('style');
+  st.textContent = '#cssBg { background-image: url("' + photo + '"); }';
+  document.head.appendChild(st);
+  document.getElementById('inlineBg').style.backgroundImage = 'url("' + makePhoto(200, 'bg') + '")';
+
+  const INV = 'invert(1)';
+  const f = el => getComputedStyle(el).filter;
+
+  setTimeout(() => {
+    report([
+      ['html has inversion filter',            f(document.documentElement).includes(INV)],
+      ['<picture> itself NOT filtered',        f(document.querySelector('picture')) === 'none'],
+      ['img in <picture> counter-inverted once', f(document.getElementById('picImg')).includes(INV)],
+      ['goods-img-wrap div NOT filtered',      f(document.querySelector('.goods-img-wrap')) === 'none'],
+      ['img in goods-img-wrap counter-inverted once', f(document.getElementById('wrapImg')).includes(INV)],
+      ['stylesheet bg tile tagged data-ash-bg', document.getElementById('cssBg').hasAttribute('data-ash-bg')],
+      ['stylesheet bg tile counter-inverted',  f(document.getElementById('cssBg')).includes(INV)],
+      ['inline bg tile counter-inverted',      f(document.getElementById('inlineBg')).includes(INV)],
+      ['img nested in bg tile NOT re-flipped', f(document.getElementById('nestedImg')) === 'none'],
+      ['plain img counter-inverted once',      f(document.getElementById('plainImg')).includes(INV)],
+    ]);
+  }, 1200);
+</script>
+</body>
+</html>

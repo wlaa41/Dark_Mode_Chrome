@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Main Ash NEW</title>
+<script src="shared.js"></script>
+<!-- simulate the extension: early.css + content script at document_start -->
+<link rel="stylesheet" href="../early.css?v=4">
+<script src="../content.js?v=4"></script>
+<style>
+  body { background: #ffffff; color: #222222; font-family: sans-serif; margin: 0; padding: 16px; }
+  h1 { font-size: 18px; color: #1a1a1a; }
+  .grid { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+  .card { width: 150px; border: 1px solid #ddd; padding: 8px; background: #f7f7f7; }
+  .card p { font-size: 12px; margin: 6px 0 0; }
+  img.product { width: 130px; height: 130px; display: block; }
+  img.small { width: 40px; height: 40px; display: block; }
+  .hbtn { background: #1e88e5; color: #ffffff; border: 0; padding: 8px 14px; }
+  .hbtn:hover { background: #ffffff; color: #111111; }
+  .badge::after { content: " NEW"; color: #b00020; background-color: #ffffff; }
+  #results { font-size: 13px; background: #eeeeee; color: #222; padding: 8px; }
+</style>
+</head>
+<body>
+<h1>Main Ash — photos, swatches, lazy-load, pseudo</h1>
+<div class="grid">
+  <div class="card"><img id="photo" class="product" alt=""><p>big product photo</p></div>
+  <div class="card"><img id="swatch" class="small" alt=""><p>40px color swatch</p></div>
+  <div class="card"><img id="glyph" class="small" alt=""><p>40px dark glyph icon</p></div>
+  <div class="card"><img id="lazy" class="product" alt=""><p>lazy: placeholder → photo</p></div>
+  <div class="card"><button class="hbtn">Hover me</button><p class="badge">badge</p></div>
+</div>
+<pre id="results">running…</pre>
+
+<script>
+  document.getElementById('photo').src = makePhoto(300, 'BIG');
+  document.getElementById('swatch').src = makeSwatch();
+  document.getElementById('glyph').src = makeGlyph();
+  const lazy = document.getElementById('lazy');
+  lazy.src = makePlaceholder();                       // dark 16px placeholder
+  setTimeout(() => { lazy.src = makePhoto(300, 'LZY'); }, 600);  // swap like a lazy loader
+
+  const f = el => getComputedStyle(el).filter;
+  const lightness = c => {
+    const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(c);
+    if (!m) return 1;
+    return (Math.max(+m[1], +m[2], +m[3]) + Math.min(+m[1], +m[2], +m[3])) / 510;
+  };
+
+  setTimeout(() => {
+    const ov = document.getElementById('ash-interactive');
+    const ovCss = ov ? ov.textContent : '';
+    report([
+      ['page background went dark',        lightness(getComputedStyle(document.body).backgroundColor) < 0.35],
+      ['heading text went light',          lightness(getComputedStyle(document.querySelector('h1')).color) > 0.65],
+      ['big photo has NO filter',          f(document.getElementById('photo')) === 'none'],
+      ['color swatch NOT inverted',        f(document.getElementById('swatch')) === 'none'],
+      ['dark glyph icon IS inverted',      f(document.getElementById('glyph')).includes('invert(1)')],
+      ['lazy photo: placeholder filter cleared', f(lazy) === 'none'],
+      ['::after badge rule flipped via stylesheet pass', ovCss.includes('.badge::after')],
+      [':hover rule flipped via stylesheet pass', ovCss.includes('.hbtn:hover')],
+      ['no per-element data-ash ids sprayed', document.querySelector('[data-ash]') === null],
+    ]);
+  }, 1800);
+</script>
+</body>
+</html>

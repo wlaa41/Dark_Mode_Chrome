@@ -1,0 +1,55 @@
+/* Ash Turbo - Performance-first CSS Dark Mode
+   One GPU filter on the root inverts the page; real media elements get exactly
+   ONE counter-filter so photos/videos keep their true colors. */
+
+:root {
+  /* Tells the browser the page supports dark mode - handles scrollbars/inputs */
+  color-scheme: dark !important;
+}
+
+/*
+   The Core Filter:
+   1. Invert colors (White -> Black, Blue -> Orange)
+   2. Hue-rotate 180deg (Orange -> Blue)
+   Result: Brightness is inverted, but Hues stay the same.
+   Scoped with :not(.ash-skip-turbo) so already-dark pages are untouched.
+*/
+html:not(.ash-skip-turbo) {
+  filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9) !important;
+  background-color: #fff !important; /* white base -> inverts to near-black */
+}
+
+/*
+   Re-inversion: un-invert the things that actually paint pixels.
+   ONLY real media here — no <picture> (it never paints; only its inner <img>
+   does, so filtering both double-inverted every product photo), and no
+   [class*="img"]-style guesses (they matched wrapper divs around an <img>,
+   which also double-inverted the photo inside — the Temu bug).
+   [style*="url("] catches inline-style background images with zero latency;
+   [data-ash-bg] is added by content.js for stylesheet-set background images.
+   Scoped to :not(.ash-skip-turbo): when the root filter is off (dark sites),
+   media must not be inverted either.
+*/
+html:not(.ash-skip-turbo) :is(img, video, canvas, embed, object, iframe,
+  [style*="url("], [data-ash-bg]) {
+  filter: invert(1) hue-rotate(180deg) !important;
+}
+
+/*
+   Exactly ONE counter-inversion per branch: media nested inside an already
+   counter-inverted ancestor must NOT flip again (e.g. an <img> inside a div
+   whose background-image we counter-inverted).
+*/
+html:not(.ash-skip-turbo) :is(img, video, canvas, embed, object,
+  [style*="url("], [data-ash-bg])
+  :is(img, video, canvas, embed, object, iframe,
+  [style*="url("], [data-ash-bg]) {
+  filter: none !important;
+}
+
+/* Fullscreen video/canvas renders in the top layer where the root filter does
+   not reach — remove our filters entirely there. */
+:is(:fullscreen, :-webkit-full-screen),
+:is(:fullscreen, :-webkit-full-screen) :is(img, video, canvas, embed, object) {
+  filter: none !important;
+}

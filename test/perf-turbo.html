@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Turbo perf — infinite scroll storm</title>
+<script>
+  window.__longTasks = [];
+  try {
+    new PerformanceObserver(list => {
+      for (const e of list.getEntries()) window.__longTasks.push(e.duration);
+    }).observe({ entryTypes: ['longtask'] });
+  } catch (e) {}
+</script>
+<link rel="stylesheet" href="../turbo/turbo.css?v=4">
+<script src="../turbo/content.js?v=4"></script>
+<style>
+  body { background: #ffffff; color: #222; font-family: sans-serif; margin: 0; padding: 12px; }
+  .card { display: inline-block; width: 90px; margin: 2px; border: 1px solid #ddd; font-size: 9px; }
+  .lazybg { width: 80px; height: 20px; background-image: url("data:image/gif;base64,R0lGODlhAQABAIAAAP8AAP///yH5BAAAAAAALAAAAAABAAEAAAICRAEAOw=="); }
+  #results { font-size: 13px; background: #eee; padding: 8px; position: fixed; top: 8px; right: 8px; width: 360px; }
+</style>
+</head>
+<body>
+<h1>Infinite-scroll mutation storm (Temu-style)</h1>
+<pre id="results">running…</pre>
+<div id="host"></div>
+<script>
+  // After load, append 100 cards every 100ms x 20 rounds = 2000 cards
+  // (each card: div + img + stylesheet-bg div + text = ~8000 nodes),
+  // like an infinite-scroll product feed. The OLD script ran a synchronous
+  // getComputedStyle over every added node inside the MutationObserver.
+  const host = document.getElementById('host');
+  const img1 = (() => {  // tiny data-uri product shot
+    const c = document.createElement('canvas'); c.width = 32; c.height = 32;
+    const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0,0,32,32);
+    x.fillStyle = '#e53935'; x.fillRect(4,4,12,12);
+    return c.toDataURL();
+  })();
+
+  let round = 0; let t0 = 0;
+  function pump() {
+    if (round === 0) { window.__longTasks.length = 0; t0 = performance.now(); }
+    if (round++ >= 20) { finish(); return; }
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < 100; i++) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const im = document.createElement('img');
+      im.src = img1; im.width = 32; im.height = 32;
+      const bg = document.createElement('div');
+      bg.className = 'lazybg';
+      const tx = document.createElement('div');
+      tx.textContent = 'product ' + round + '-' + i;
+      card.append(im, bg, tx);
+      frag.appendChild(card);
+    }
+    host.appendChild(frag);
+    setTimeout(pump, 100);
+  }
+  addEventListener('load', () => setTimeout(pump, 300));
+
+  function finish() {
+    setTimeout(() => {
+      const lt = window.__longTasks;
+      const maxLT = lt.length ? Math.max(...lt) : 0;
+      const tbt = lt.reduce((s, d) => s + Math.max(0, d - 50), 0);
+      const tagged = document.querySelectorAll('.lazybg[data-ash-bg]').length;
+      const total = document.querySelectorAll('.lazybg').length;
+      const pre = document.getElementById('results');
+      const ok = maxLT < 120 && tagged === total;
+      pre.textContent =
+        'cards appended: ' + total +
+        '\nlong tasks during storm: ' + lt.length +
+        '\nlongest task: ' + maxLT.toFixed(0) + ' ms' +
+        '\ntotal blocking time: ' + tbt.toFixed(0) + ' ms' +
+        '\nstylesheet-bg tiles tagged: ' + tagged + ' / ' + total +
+        '\n\n' + (ok ? 'PERF OK' : 'PERF PROBLEM');
+      document.title = (ok ? 'PASS' : 'FAIL') + ' - perf turbo';
+    }, 2500);
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>BASELINE no-Ash perf — 10k elements</title>
+<script>
+  // Install BEFORE the content script so we see all of its long tasks.
+  // Entries keep their startTime so we can separate the test page's own DOM
+  // construction (pre-DOMContentLoaded) from Ash's walking (post-DCL).
+  window.__longTasks = [];
+  try {
+    new PerformanceObserver(list => {
+      for (const e of list.getEntries()) window.__longTasks.push({ start: e.startTime, dur: e.duration });
+    }).observe({ entryTypes: ['longtask'] });
+  } catch (e) {}
+  window.__maxGap = 0;
+  addEventListener('DOMContentLoaded', () => {
+    window.__dclAt = performance.now();
+    let last = performance.now();
+    const tick = t => {
+      window.__maxGap = Math.max(window.__maxGap, t - last);
+      last = t;
+      if (performance.now() < 8000) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+</script>
+
+
+<style>
+  body { background: #ffffff; color: #222; font-family: sans-serif; margin: 0; padding: 12px; }
+  .row { background: #f6f6f6; border: 1px solid #e0e0e0; margin: 1px; padding: 1px 4px; font-size: 10px; }
+  .row b { color: #1565c0; }
+  .row i { color: #6a1b9a; background: #fff3e0; }
+  #results { font-size: 13px; background: #eee; padding: 8px; position: fixed; top: 8px; right: 8px; width: 360px; }
+</style>
+</head>
+<body>
+<h1>10,000-element page</h1>
+<pre id="results">running…</pre>
+<div id="host"></div>
+<script>
+  // Build 10k styled elements synchronously, before DOMContentLoaded fires,
+  // so the walker meets them all in its initial pass.
+  const host = document.getElementById('host');
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < 2500; i++) {
+    const d = document.createElement('div');
+    d.className = 'row';
+    d.innerHTML = '<b>item ' + i + '</b> <span>text</span> <i>tag</i>';
+    frag.appendChild(d);
+  }
+  host.appendChild(frag); // 2500 rows x 4 elements = 10k elements
+
+  setTimeout(() => {
+    const dcl = window.__dclAt || 0;
+    const mine = window.__longTasks.filter(t => t.start < dcl - 5);
+    const ash  = window.__longTasks.filter(t => t.start >= dcl - 5);
+    const durs = ash.map(t => t.dur);
+    const maxLT = durs.length ? Math.max(...durs) : 0;
+    const tbt = durs.reduce((s, d) => s + Math.max(0, d - 50), 0);
+    const lastRow = host.lastElementChild;
+    const flipped = (() => {
+      const m = /rgb\((\d+)/.exec(getComputedStyle(lastRow).backgroundColor);
+      return m && +m[1] < 120; // light gray row became dark
+    })();
+    const pre = document.getElementById('results');
+    pre.textContent =
+      'page-build long tasks (not Ash): ' + mine.map(t => t.dur.toFixed(0)).join(', ') +
+      '\nAsh long tasks: ' + (ash.map(t => t.dur.toFixed(0)).join(', ') || 'none') +
+      '\nAsh longest task: ' + maxLT.toFixed(0) + ' ms' +
+      '\nAsh total blocking time: ' + tbt.toFixed(0) + ' ms' +
+      '\nworst frame gap after DCL: ' + window.__maxGap.toFixed(0) + ' ms' +
+      '\nlast row flipped dark: ' + flipped +
+      '\n\n' + ((maxLT < 120 && flipped) ? 'PERF OK' : 'PERF PROBLEM');
+    document.title = ((maxLT < 120 && flipped) ? 'PASS' : 'FAIL') + ' - perf main';
+  }, 6000);
+</script>
+</body>
+</html>

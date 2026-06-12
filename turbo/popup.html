@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Ash</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="brand"><span class="brand-mark" aria-hidden="true">☾</span> ASH</div>
+
+  <div class="current-site" id="currentSite">—</div>
+  <button id="toggleBtn" class="btn primary" disabled>…</button>
+  <div class="hint" id="hint"></div>
+
+  <div class="divider"></div>
+
+  <div class="section-row">
+    <div class="section-title">Disabled sites <span class="count" id="count">0</span></div>
+  </div>
+
+  <div class="add-row">
+    <input id="addInput" type="text" placeholder="add hostname (e.g. example.com)" spellcheck="false" autocomplete="off">
+    <button id="addBtn" class="btn small">Add</button>
+  </div>
+
+  <ul id="list" class="list"></ul>
+  <div id="empty" class="empty">No sites disabled.</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

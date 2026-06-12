@@ -1,0 +1,76 @@
+/* Ash Turbo - Performance-first CSS Dark Mode */
+
+:root {
+  /* Tells the browser the page supports dark mode - handles scrollbars/inputs */
+  color-scheme: dark !important;
+}
+
+/* 
+   The Core Filter:
+   1. Invert colors (White -> Black, Blue -> Orange)
+   2. Hue-rotate 180deg (Orange -> Blue)
+   Result: Brightness is inverted, but Hues stay the same.
+*/
+html {
+  filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9) !important;
+  background-color: #fff !important; /* Ensure a white base to invert from */
+}
+
+/* Skip the filter if the page is already dark */
+html.ash-skip-turbo {
+  filter: none !important;
+  background-color: transparent !important;
+}
+
+/* 
+   Re-inversion:
+   We must "un-invert" everything that should look natural.
+   - Images, Videos, Canvases.
+   - Elements with background images.
+   - IFrames (they will have their own filter applied).
+*/
+img, 
+video, 
+canvas, 
+iframe,
+[style*="background-image"],
+[style*="background: url"],
+[class*="image"],
+[class*="img"],
+[class*="pic"],
+.re-invert {
+  filter: invert(1) hue-rotate(180deg) !important;
+}
+
+/* Specific fix for Temu and similar e-commerce sites: 
+   Often they use nested containers or specific attribute selectors for product photos. */
+[data-test*="image"],
+[data-alt*="product"],
+picture,
+.re-invert-forced {
+  filter: invert(1) hue-rotate(180deg) !important;
+}
+
+/* Ensure that re-inverted elements inside other re-inverted elements 
+   don't flip back (double inversion). */
+img img,
+[style*="background-image"] img,
+[style*="background-image"] [style*="background-image"],
+.re-invert-forced img,
+.re-invert-forced [style*="background-image"] {
+  filter: none !important;
+}
+
+/* Fix for full-screen elements that shouldn't be inverted */
+:fullscreen, 
+:-webkit-full-screen {
+  filter: none !important;
+}
+
+/* Optimization: Backgrounds that are already dark shouldn't be double-inverted if possible,
+   but in a pure-CSS approach, we trade perfection for raw speed. */
+
+/* Reduce motion/flicker during load */
+html {
+  transition: filter 0.1s ease-in-out;
+}
